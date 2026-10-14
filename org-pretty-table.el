@@ -414,16 +414,12 @@ Only `display' is cleared; faces are not changed."
 (defvar org-pretty-table-mode)
 
 (defun org-pretty-table-align (oldfun &rest args)
-  "Call OLDFUN with ARGS with the table's glyphs removed, then restore them.
-Only buffers with `org-pretty-table-mode' enabled are affected."
-  (if (not org-pretty-table-mode)
-      (apply oldfun args)
-    (unwind-protect
-        (progn
-          (org-pretty-table-mode -1)
-          (org-pretty-table-unpropertize-table)
-          (apply oldfun args))
-      (org-pretty-table-mode 1))))
+  "Call OLDFUN with ARGS after removing the glyphs from the table at point.
+Only tables in buffers with `org-pretty-table-mode' enabled are affected.
+Removing the glyphs marks the table for refontification."
+  (when (and org-pretty-table-mode (org-at-table-p))
+    (org-pretty-table-unpropertize-table))
+  (apply oldfun args))
 
 ;;; Minor mode:
 
@@ -447,7 +443,6 @@ remain."
         (font-lock-add-keywords nil org-pretty-table--keywords 'append)
         (font-lock-flush))
     (jit-lock-unregister 'org-pretty-table-propertize-region)
-    (advice-remove 'org-table-align #'org-pretty-table-align)
     (font-lock-remove-keywords nil org-pretty-table--keywords)
     (setq org-pretty-table--cache nil)
     (org-pretty-table-unpropertize-region (point-min) (point-max))

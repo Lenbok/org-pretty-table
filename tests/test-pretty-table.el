@@ -714,4 +714,61 @@ is still installed."
       (with-org-text "| a | bb |\n|---+----|\n| ccc | d |"
         (goto-char (point-min))
         (org-table-align)
-        (expect org-pretty-table-mode :to-be-truthy)))))
+        (expect org-pretty-table-mode :to-be-truthy)))
+
+    (it "stays installed when the mode is disabled in another buffer"
+      (with-org-text "| a | bb |\n|---+----|\n| ccc | d |"
+        (let ((other (generate-new-buffer "opt-other")))
+          (unwind-protect
+              (with-current-buffer other
+                (org-mode)
+                (org-pretty-table-mode 1)
+                (org-pretty-table-mode -1))
+            (kill-buffer other)))
+        (expect (advice-member-p #'org-pretty-table-align 'org-table-align)
+                :to-be-truthy)
+        (goto-char (point-min))
+        (org-table-align)
+        (opt-refontify)
+        (expect (opt-face-p (opt-goto "|") 'org-pretty-table-border) :to-be-truthy)
+        (expect (get-text-property (opt-goto "|") 'display) :to-be-truthy)))
+
+    (it "is installed once however often the mode is enabled"
+      (advice-remove 'org-table-align #'org-pretty-table-align)
+      (with-org-text "| a |"
+        (org-pretty-table-mode 1)
+        (org-pretty-table-mode 1))
+      (let ((count 0))
+        (advice-mapc (lambda (f _props) (when (eq f #'org-pretty-table-align)
+                                          (setq count (1+ count))))
+                     'org-table-align)
+        (expect count :to-be 1)))
+
+    (it "does not toggle the mode while aligning"
+      (with-org-text "| a | bb |\n|---+----|\n| ccc | d |"
+        (spy-on 'org-pretty-table-mode :and-call-through)
+        (goto-char (point-min))
+        (org-table-align)
+        (expect 'org-pretty-table-mode :not :to-have-been-called)
+        (expect (assoc 'org-pretty-table--matcher font-lock-keywords) :to-be-truthy)))
+
+    (it "restores glyphs and faces on a table that is already aligned"
+      (with-org-text "| a   | bb |\n|-----+----|\n| ccc | d  |"
+        (goto-char (point-min))
+        (org-table-align)
+        (font-lock-ensure)
+        (when jit-lock-functions (jit-lock-fontify-now))
+        (expect (get-text-property (opt-goto "|") 'display) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "|") 'org-pretty-table-border) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "a") 'org-pretty-table-header) :to-be-truthy)))
+
+    (it "re-applies glyphs when the aligning function leaves the text alone"
+      (with-org-text "| a   | bb |\n|-----+----|\n| ccc | d  |"
+        (goto-char (point-min))
+        (expect (get-text-property (opt-goto "|") 'display) :to-be-truthy)
+        (goto-char (point-min))
+        (org-pretty-table-align #'ignore)
+        ;; Only refontifies text marked unfontified, as redisplay does.
+        (jit-lock-fontify-now)
+        (expect (get-text-property (opt-goto "|") 'display) :to-be-truthy)
+        (expect (get-text-property (opt-goto "-----") 'display) :to-be-truthy)))))
