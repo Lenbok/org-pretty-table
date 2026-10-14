@@ -33,6 +33,21 @@
     (jit-lock-refontify)
     (jit-lock-fontify-now)))
 
+(defun opt-glyphs ()
+  "Return the buffer's lines with `display' strings substituted, as a list."
+  (save-excursion
+    (goto-char (point-min))
+    (let (lines)
+      (while (not (eobp))
+        (let ((line ""))
+          (while (not (or (eolp) (eobp)))
+            (setq line (concat line (or (get-text-property (point) 'display)
+                                        (string (char-after)))))
+            (forward-char 1))
+          (push line lines))
+        (forward-line 1))
+      (nreverse lines))))
+
 (defmacro with-org-text (text &rest body)
   "Insert TEXT in an Org buffer, enable the mode, fontify, run BODY."
   (declare (indent 1))
@@ -609,4 +624,43 @@
               (expect (get-text-property (opt-goto "|---") 'display) :to-be-truthy)
               (goto-char (point-min))
               (expect (get-text-property (point) 'display) :to-be-truthy))
-          (kill-buffer buffer))))))
+          (kill-buffer buffer)))))
+
+  (describe "table starting on the first line of the buffer (issue 13)"
+
+    (defconst opt-issue-13-text
+      "| panel_id | gs_use | species_id |\n|----------+--------+------------|\n|        1 | false  |          1 |\n|        2 | false  |          1 |")
+
+    (it "renders the header divider with left and right T and crosses"
+      (with-org-text opt-issue-13-text
+        (goto-char (point-min))
+        (forward-line 1)
+        (expect (opt-assert-display "├") :to-be-truthy)
+        (end-of-line)
+        (backward-char 1)
+        (expect (opt-assert-display "┤") :to-be-truthy)
+        (goto-char (point-min))
+        (forward-line 1)
+        (search-forward "+")
+        (backward-char 1)
+        (expect (opt-assert-display "┼") :to-be-truthy)))
+
+    (it "renders the same as when a blank line precedes the table"
+      (let (without with)
+        (with-org-text opt-issue-13-text
+          (setq without (opt-glyphs)))
+        (with-org-text (concat "\n" opt-issue-13-text)
+          (setq with (opt-glyphs)))
+        (expect without :to-equal (cdr with))))
+
+    (it "renders a two-row table (data row, then hline) at the top"
+      (with-org-text "| a | b |\n|---+---|"
+        (goto-char (point-min))
+        (forward-line 1)
+        (expect (opt-assert-display "└") :to-be-truthy)))
+
+    (it "renders a header divider on line two with a table row after it"
+      (with-org-text "| a | b |\n|---+---|\n| c | d |"
+        (goto-char (point-min))
+        (forward-line 1)
+        (expect (opt-assert-display "├") :to-be-truthy)))))
