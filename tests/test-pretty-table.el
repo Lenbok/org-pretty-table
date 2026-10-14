@@ -10,6 +10,40 @@
   (re-search-forward str)
   (backward-char 1))
 
+(defun opt-faces-at (pos)
+  "Return the `face' at POS as a list."
+  (let ((f (get-text-property pos 'face))) (if (listp f) f (list f))))
+
+(defun opt-face-p (pos face)
+  (and (memq face (opt-faces-at pos)) t))
+
+(defun opt-goto (str)
+  "Go to the start of the first STR in the buffer; return that position."
+  (goto-char (point-min))
+  (search-forward str)
+  (goto-char (match-beginning 0))
+  (point))
+
+(defun opt-refontify ()
+  (font-lock-flush)
+  (font-lock-ensure)
+  ;; `jit-lock-fontify-now' fails when no jit-lock function is registered,
+  ;; which is the case in a temp buffer once the mode is off.
+  (when jit-lock-functions
+    (jit-lock-refontify)
+    (jit-lock-fontify-now)))
+
+(defmacro with-org-text (text &rest body)
+  "Insert TEXT in an Org buffer, enable the mode, fontify, run BODY."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (org-mode)
+     (insert ,text)
+     (org-pretty-table-mode 1)
+     (font-lock-mode 1)
+     (opt-refontify)
+     ,@body))
+
 (defmacro with-org-table (&rest body)
   (declare (indent 0))
   (let ((prefix (plist-get body :prefix))
@@ -29,6 +63,8 @@
          (insert ,suffix))
 
        (org-pretty-table-mode 1)
+       (font-lock-mode 1)
+       (font-lock-ensure)
        (jit-lock-refontify)
        (jit-lock-fontify-now)
        ,@body)))
@@ -216,4 +252,361 @@
           :suffix "\n** headline\n"
           (goto-char (point-max))
           (re-search-backward "+")
-          (expect (opt-assert-display "┴") :to-be-truthy))))))
+          (expect (opt-assert-display "┴") :to-be-truthy)))))
+
+  (describe "faces"
+
+    (it "defines the four faces with the expected inheritance"
+      (expect (face-attribute 'org-pretty-table :inherit nil t) :to-be 'org-table)
+      (expect (face-attribute 'org-pretty-table-header :inherit nil t) :to-be 'org-pretty-table)
+      (expect (face-attribute 'org-pretty-table-header :weight nil t) :to-be 'bold)
+      (expect (face-attribute 'org-pretty-table-border :inherit nil t)
+              :to-equal '(shadow org-pretty-table))
+      (expect (face-attribute 'org-pretty-table-zebra :inherit nil t)
+              :to-equal '(hl-line org-pretty-table)))
+
+    (it "gives hline characters the border face first"
+      (with-org-text "|---+---|\n| a | b |\n|---+---|"
+        (dolist (pos '(1 5 9))
+          (expect (opt-face-p pos 'org-pretty-table-border) :to-be-truthy)
+          (expect (car (opt-faces-at pos)) :to-be 'org-pretty-table-border))))
+
+    (it "gives data-row pipes the border face"
+      (with-org-text "|---+---|\n| a | b |\n|---+---|"
+        (let ((pos (opt-goto "| a")))
+          (expect (opt-face-p pos 'org-pretty-table-border) :to-be-truthy))
+        (goto-char (point-min))
+        (forward-line 1)
+        (end-of-line)
+        (expect (opt-face-p (1- (point)) 'org-pretty-table-border) :to-be-truthy)))
+
+    (it "leaves cell text without the border face"
+      (with-org-text "|---+---|\n| a | b |\n|---+---|"
+        (expect (opt-face-p (opt-goto "a") 'org-pretty-table-border) :to-be nil)))
+
+    (it "does not style pipes outside tables"
+      (with-org-text "#+begin_src text\n| not a table\n#+end_src\n"
+        (expect (opt-face-p (opt-goto "| not") 'org-pretty-table-border) :to-be nil))))
+
+  (describe "header rows"
+
+    (it "styles header cells and padding, but not borders"
+      (with-org-text "|---+---|\n| name | age |\n|---+---|\n| bob | 10 |\n|---+---|"
+        (let ((name (opt-goto "name")))
+          (expect (opt-face-p name 'org-pretty-table-header) :to-be-truthy)
+          (expect (opt-face-p (+ name 4) 'org-pretty-table-header) :to-be-truthy)
+          (expect (opt-face-p (1- name) 'org-pretty-table-header) :to-be-truthy)
+          (expect (opt-face-p (- name 2) 'org-pretty-table-header) :to-be nil)
+          (expect (opt-face-p (- name 2) 'org-pretty-table-border) :to-be-truthy))))
+
+    (it "gives data cells the base face only"
+      (with-org-text "|---+---|\n| name | age |\n|---+---|\n| bob | 10 |\n|---+---|"
+        (let ((bob (opt-goto "bob")))
+          (expect (opt-face-p bob 'org-pretty-table) :to-be-truthy)
+          (expect (opt-face-p bob 'org-pretty-table-header) :to-be nil)
+          (expect (opt-face-p (- bob 2) 'org-pretty-table-border) :to-be-truthy))))
+
+    (it "treats rows above the first hline as header without a leading hline"
+      (with-org-text "| h |\n|---|\n| a |"
+        (expect (opt-face-p (opt-goto "h") 'org-pretty-table-header) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "a") 'org-pretty-table-header) :to-be nil)))
+
+    (it "has no header when the table has no hline"
+      (with-org-text "| a | b |\n| c | d |"
+        (dotimes (i (buffer-size))
+          (expect (opt-face-p (1+ i) 'org-pretty-table-header) :to-be nil))))
+
+    (it "only treats the first group as header"
+      (with-org-text "| a |\n|---|\n| b |\n|---|\n| c |"
+        (expect (opt-face-p (opt-goto "a") 'org-pretty-table-header) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "b") 'org-pretty-table-header) :to-be nil)
+        (expect (opt-face-p (opt-goto "c") 'org-pretty-table-header) :to-be nil)))
+
+    (it "keeps inline Org faces alongside the row face"
+      (with-org-text "| *bold* |\n|---|\n| x |"
+        (let ((pos (opt-goto "bold")))
+          (expect (opt-face-p pos 'bold) :to-be-truthy)
+          (expect (opt-face-p pos 'org-pretty-table-header) :to-be-truthy)))))
+
+  (describe "org-table face"
+
+    (it "is not left in front of our faces, so remapping it cannot override them"
+      (with-org-text "|---+---|\n| name | age |\n|---+---|\n| bob | 10 |\n|---+---|"
+        (dotimes (i (buffer-size))
+          (unless (eq (char-after (1+ i)) ?\n)
+            (expect (opt-face-p (1+ i) 'org-table) :to-be nil)
+            (expect (opt-face-p (1+ i) 'org-table-row) :to-be nil)))
+        (expect (car (opt-faces-at (opt-goto "name"))) :to-be 'org-pretty-table-header))))
+
+  (describe "zebra"
+
+    (defconst opt-zebra-text
+      "| h1 | h2 |\n|----+----|\n| a  | 1  |\n| b  | 2  |\n| c  | 3  |\n| d  | 4  |")
+
+    (it "stripes every second data row, starting with the second"
+      (with-org-text opt-zebra-text
+        (expect (opt-face-p (opt-goto "a") 'org-pretty-table-zebra) :to-be nil)
+        (expect (opt-face-p (opt-goto "a") 'org-pretty-table) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "b") 'org-pretty-table-zebra) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "c") 'org-pretty-table-zebra) :to-be nil)
+        (expect (opt-face-p (opt-goto "d") 'org-pretty-table-zebra) :to-be-truthy)))
+
+    (it "shades padding but not borders"
+      (with-org-text opt-zebra-text
+        (let ((b (opt-goto "b")))
+          (expect (opt-face-p (1+ b) 'org-pretty-table-zebra) :to-be-truthy)
+          (expect (opt-face-p (1- b) 'org-pretty-table-zebra) :to-be-truthy)
+          (expect (opt-face-p (- b 2) 'org-pretty-table-zebra) :to-be nil)
+          (expect (opt-face-p (- b 2) 'org-pretty-table-border) :to-be-truthy))))
+
+    (it "never stripes header or hline rows"
+      (with-org-text opt-zebra-text
+        (dolist (pos (list (opt-goto "h1") (opt-goto "----")))
+          (expect (opt-face-p pos 'org-pretty-table-zebra) :to-be nil))))
+
+    (it "is off when the option is nil"
+      (let ((org-pretty-table-zebra-stripe nil))
+        (with-org-text opt-zebra-text
+          (dotimes (i (buffer-size))
+            (expect (opt-face-p (1+ i) 'org-pretty-table-zebra) :to-be nil)))))
+
+    (it "stripes tables without a header too"
+      (with-org-text "| a |\n| b |\n| c |"
+        (expect (opt-face-p (opt-goto "a") 'org-pretty-table-zebra) :to-be nil)
+        (expect (opt-face-p (opt-goto "b") 'org-pretty-table-zebra) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "c") 'org-pretty-table-zebra) :to-be nil)))
+
+    (it "gets parity right when fontifying a region that starts mid-table"
+      (with-org-text opt-zebra-text
+        (font-lock-unfontify-buffer)
+        (font-lock-fontify-region (progn (opt-goto "c") (line-beginning-position))
+                                  (point-max))
+        (expect (opt-face-p (opt-goto "c") 'org-pretty-table-zebra) :to-be nil)
+        (expect (opt-face-p (opt-goto "c") 'org-pretty-table) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "d") 'org-pretty-table-zebra) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "b") 'org-pretty-table) :to-be nil)))
+
+    (it "updates open buffers when the option is set"
+      (with-org-text opt-zebra-text
+        (unwind-protect
+            (progn
+              (customize-set-variable 'org-pretty-table-zebra-stripe nil)
+              (font-lock-ensure)
+              (expect (opt-face-p (opt-goto "b") 'org-pretty-table-zebra) :to-be nil))
+          (customize-set-variable 'org-pretty-table-zebra-stripe t)))))
+
+  (describe "row cache"
+
+    (defconst opt-cache-text
+      "| h |\n|---|\n| a |\n| b |\n| c |\n| d |")
+
+    (before-each
+      (spy-on 'org-pretty-table--compute-rows :and-call-through))
+
+    (it "computes each table once while the buffer text is unchanged"
+      (with-org-text opt-cache-text
+        (opt-refontify)
+        (opt-refontify)
+        (expect 'org-pretty-table--compute-rows :to-have-been-called-times 1)))
+
+    (it "recomputes after the text changes"
+      (with-org-text opt-cache-text
+        (goto-char (point-max))
+        (insert "x")
+        (opt-refontify)
+        (expect (spy-calls-count 'org-pretty-table--compute-rows) :to-be-greater-than 1)))
+
+    (it "keeps parity correct after inserting a data row above"
+      (with-org-text opt-cache-text
+        (opt-goto "| b")
+        (insert "| new |\n")
+        (opt-refontify)
+        (expect (opt-face-p (opt-goto "a") 'org-pretty-table-zebra) :to-be nil)
+        (expect (opt-face-p (opt-goto "new") 'org-pretty-table-zebra) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "b") 'org-pretty-table-zebra) :to-be nil)
+        (expect (opt-face-p (opt-goto "c") 'org-pretty-table-zebra) :to-be-truthy)))
+
+    (it "keeps parity correct after deleting a data row"
+      (with-org-text opt-cache-text
+        (opt-goto "| a")
+        (delete-region (line-beginning-position) (1+ (line-end-position)))
+        (opt-refontify)
+        (expect (opt-face-p (opt-goto "b") 'org-pretty-table-zebra) :to-be nil)
+        (expect (opt-face-p (opt-goto "c") 'org-pretty-table-zebra) :to-be-truthy)))
+
+    (it "keeps parity correct after editing text above the table"
+      (with-org-text (concat "intro\n\n" opt-cache-text)
+        (goto-char (point-min))
+        (insert "more intro ")
+        (opt-refontify)
+        (expect (opt-face-p (opt-goto "a") 'org-pretty-table-zebra) :to-be nil)
+        (expect (opt-face-p (opt-goto "b") 'org-pretty-table-zebra) :to-be-truthy)))
+
+    (it "is empty after the mode is turned off"
+      (with-org-text opt-cache-text
+        (expect org-pretty-table--cache :not :to-be nil)
+        (org-pretty-table-mode -1)
+        (expect org-pretty-table--cache :to-be nil)))
+
+    (it "is cleared when the zebra option is set"
+      (with-org-text opt-cache-text
+        (unwind-protect
+            (progn
+              (customize-set-variable 'org-pretty-table-zebra-stripe nil)
+              (expect org-pretty-table--cache :to-be nil))
+          (customize-set-variable 'org-pretty-table-zebra-stripe t)))))
+
+  (describe "disabling"
+
+    (defconst opt-disable-text
+      "| h |\n|---|\n| a |\n| b |\n| c |")
+
+    (defun opt-any-face-p (faces)
+      (let (found)
+        (dotimes (i (buffer-size))
+          (dolist (f faces)
+            (when (opt-face-p (1+ i) f) (setq found t))))
+        found))
+
+    (it "removes this package's faces and display strings, keeping Org's"
+      (with-org-text opt-disable-text
+        (expect (opt-any-face-p '(org-pretty-table org-pretty-table-header
+                                  org-pretty-table-border org-pretty-table-zebra))
+                :to-be-truthy)
+        (org-pretty-table-mode -1)
+        (opt-refontify)
+        (expect (opt-any-face-p '(org-pretty-table org-pretty-table-header
+                                  org-pretty-table-border org-pretty-table-zebra))
+                :to-be nil)
+        (expect (opt-face-p (opt-goto "|") 'org-table) :to-be-truthy)
+        (dotimes (i (buffer-size))
+          (expect (get-text-property (1+ i) 'display) :to-be nil))))
+
+    (it "removes the font-lock keyword"
+      (with-org-text opt-disable-text
+        (expect (assoc 'org-pretty-table--matcher font-lock-keywords) :to-be-truthy)
+        (org-pretty-table-mode -1)
+        (expect (assoc 'org-pretty-table--matcher font-lock-keywords) :to-be nil)))
+
+    (it "brings faces and display strings back when re-enabled"
+      (with-org-text opt-disable-text
+        (org-pretty-table-mode -1)
+        (opt-refontify)
+        (org-pretty-table-mode 1)
+        (opt-refontify)
+        (expect (opt-face-p (opt-goto "|") 'org-pretty-table-border) :to-be-truthy)
+        (expect (get-text-property (opt-goto "|") 'display) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "b") 'org-pretty-table-zebra) :to-be-truthy))))
+
+  (describe "alignment"
+
+    (it "keeps faces and display strings after org-table-align"
+      (with-org-text "| a | bb |\n|-\n| ccc | d |\n| e | f |"
+        (goto-char (point-min))
+        (org-table-align)
+        (opt-refontify)
+        (expect org-pretty-table-mode :to-be-truthy)
+        (expect (opt-face-p (opt-goto "|") 'org-pretty-table-border) :to-be-truthy)
+        (expect (get-text-property (opt-goto "|") 'display) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "a") 'org-pretty-table-header) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "f") 'org-pretty-table-zebra) :to-be-truthy))))
+
+  (describe "custom charset"
+
+    (it "still gives border faces to the replaced characters"
+      (setq org-pretty-table-charset "╒╕╘╛╤╡╧╞╪═│")
+      (with-org-table
+        (goto-char (point-min))
+        (expect (opt-assert-display "╒") :to-be-truthy)
+        (expect (opt-face-p (point) 'org-pretty-table-border) :to-be-truthy))))
+
+  (describe "base face"
+
+    (it "is on every table character, last, even for header, zebra and borders"
+      (with-org-text "| h |\n|---|\n| a |\n| b |"
+        (dotimes (i (buffer-size))
+          (unless (eq (char-after (1+ i)) ?\n)
+            (expect (car (last (opt-faces-at (1+ i)))) :to-be 'org-pretty-table)))))
+
+    (it "still supplies the face when a derived face is re-parented"
+      (with-org-text "| h |\n|---|\n| a |\n| b |"
+        (expect (opt-face-p (opt-goto "b") 'org-pretty-table-zebra) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "b") 'org-pretty-table) :to-be-truthy)
+        (expect (opt-face-p (opt-goto "h") 'org-pretty-table) :to-be-truthy)
+        (expect (opt-face-p (1- (opt-goto "b")) 'org-pretty-table) :to-be-truthy))))
+
+  (describe "turn-on-org-pretty-table-mode"
+
+    (it "enables the mode in a normal buffer"
+      (let ((buffer (generate-new-buffer "opt-visible")))
+        (unwind-protect
+            (with-current-buffer buffer
+              (org-mode)
+              (turn-on-org-pretty-table-mode)
+              (expect org-pretty-table-mode :to-be-truthy))
+          (kill-buffer buffer))))
+
+    (it "skips hidden buffers such as Org's source fontification buffers"
+      (let ((buffer (generate-new-buffer " *org-src-fontification:org-mode*")))
+        (unwind-protect
+            (with-current-buffer buffer
+              (org-mode)
+              (turn-on-org-pretty-table-mode)
+              (expect org-pretty-table-mode :to-be nil)
+              (expect (assoc 'org-pretty-table--matcher font-lock-keywords) :to-be nil))
+          (kill-buffer buffer))))
+
+    (it "does not style a table inside a src org block through native fontification"
+      (let ((buffer (generate-new-buffer "opt-src")))
+        (unwind-protect
+            (with-current-buffer buffer
+              (org-mode)
+              (insert "#+begin_src org\n| a | b |\n|---+---|\n| c | d |\n#+end_src\n")
+              (global-org-pretty-table-mode 1)
+              (unwind-protect
+                  (progn
+                    (org-pretty-table-mode 1)
+                    (opt-refontify)
+                    (expect (opt-face-p (opt-goto "| a") 'org-pretty-table-border) :to-be nil))
+                (global-org-pretty-table-mode -1)))
+          (kill-buffer buffer)))))
+
+  (describe "jit-lock ordering"
+
+    (defun opt-register-font-lock ()
+      "Register `font-lock-fontify-region' like `jit-lock-mode' does."
+      (font-lock-mode 1)
+      (jit-lock-register 'font-lock-fontify-region))
+
+    (it "runs after font-lock when the mode is enabled after font-lock"
+      (let ((buffer (generate-new-buffer "opt-order")))
+        (unwind-protect
+            (with-current-buffer buffer
+              (org-mode)
+              (insert "| a | b |\n|---+---|\n| c | d |")
+              (opt-register-font-lock)
+              (org-pretty-table-mode 1)
+              (let ((fns (remq t jit-lock-functions)))
+                (expect (car (last fns)) :to-be 'org-pretty-table-propertize-region)
+                (expect (memq 'font-lock-fontify-region fns) :to-be-truthy)
+                (expect (< (seq-position fns 'font-lock-fontify-region)
+                           (seq-position fns 'org-pretty-table-propertize-region))
+                        :to-be-truthy)))
+          (kill-buffer buffer))))
+
+    (it "keeps display strings when display is a font-lock managed property"
+      (let ((buffer (generate-new-buffer "opt-managed")))
+        (unwind-protect
+            (with-current-buffer buffer
+              (org-mode)
+              (insert "| a | b |\n|---+---|\n| c | d |")
+              (opt-register-font-lock)
+              (setq-local font-lock-extra-managed-props
+                          (cons 'display font-lock-extra-managed-props))
+              (org-pretty-table-mode 1)
+              (opt-refontify)
+              (opt-refontify)
+              (expect (get-text-property (opt-goto "|---") 'display) :to-be-truthy)
+              (goto-char (point-min))
+              (expect (get-text-property (point) 'display) :to-be-truthy))
+          (kill-buffer buffer))))))
