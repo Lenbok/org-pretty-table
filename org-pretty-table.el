@@ -411,13 +411,19 @@ Only `display' is cleared; faces are not changed."
   "Remove box-drawing compositions from table at point."
   (org-pretty-table-unpropertize-region (org-table-begin) (org-table-end)))
 
+(defvar org-pretty-table-mode)
+
 (defun org-pretty-table-align (oldfun &rest args)
-  (unwind-protect
-      (progn
-        (org-pretty-table-mode -1)
-        (org-pretty-table-unpropertize-table)
-        (apply oldfun args))
-    (org-pretty-table-mode 1)))
+  "Call OLDFUN with ARGS with the table's glyphs removed, then restore them.
+Only buffers with `org-pretty-table-mode' enabled are affected."
+  (if (not org-pretty-table-mode)
+      (apply oldfun args)
+    (unwind-protect
+        (progn
+          (org-pretty-table-mode -1)
+          (org-pretty-table-unpropertize-table)
+          (apply oldfun args))
+      (org-pretty-table-mode 1))))
 
 ;;; Minor mode:
 

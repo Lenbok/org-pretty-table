@@ -663,4 +663,55 @@
       (with-org-text "| a | b |\n|---+---|\n| c | d |"
         (goto-char (point-min))
         (forward-line 1)
-        (expect (opt-assert-display "├") :to-be-truthy)))))
+        (expect (opt-assert-display "├") :to-be-truthy))))
+
+  (describe "org-table-align advice"
+
+    (defun opt-align-in-buffer-without-mode ()
+      "Align a table in a visible buffer where the mode is off.
+Return a list of the mode state before and after, and whether the advice
+is still installed."
+      (let ((buffer (generate-new-buffer "opt-no-mode")) result)
+        (unwind-protect
+            (with-current-buffer buffer
+              (org-mode)
+              (insert "| a | bb |\n|---+----|\n| ccc | d |\n")
+              (org-pretty-table-mode -1)
+              (advice-add 'org-table-align :around #'org-pretty-table-align)
+              (goto-char (point-min))
+              (let ((before org-pretty-table-mode))
+                (org-table-align)
+                (setq result (list before org-pretty-table-mode
+                                   (and (advice-member-p #'org-pretty-table-align
+                                                         'org-table-align)
+                                        t)))))
+          (advice-remove 'org-table-align #'org-pretty-table-align)
+          (kill-buffer buffer))
+        result))
+
+    (it "does not turn the mode on in a buffer where it is off"
+      (expect (nth 1 (opt-align-in-buffer-without-mode)) :to-be nil))
+
+    (it "leaves the advice installed for buffers that use the mode"
+      (expect (nth 2 (opt-align-in-buffer-without-mode)) :to-be-truthy))
+
+    (it "still aligns the table in a buffer where the mode is off"
+      (let ((buffer (generate-new-buffer "opt-no-mode")))
+        (unwind-protect
+            (with-current-buffer buffer
+              (org-mode)
+              (insert "| a | bb |\n|---+----|\n| ccc | d |\n")
+              (org-pretty-table-mode -1)
+              (advice-add 'org-table-align :around #'org-pretty-table-align)
+              (goto-char (point-min))
+              (org-table-align)
+              (expect (buffer-substring-no-properties (point-min) (line-end-position))
+                      :to-equal "| a   | bb |"))
+          (advice-remove 'org-table-align #'org-pretty-table-align)
+          (kill-buffer buffer))))
+
+    (it "keeps the mode on in a buffer where it is on"
+      (with-org-text "| a | bb |\n|---+----|\n| ccc | d |"
+        (goto-char (point-min))
+        (org-table-align)
+        (expect org-pretty-table-mode :to-be-truthy)))))
